@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI DJ Station</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "music-metadata-browser": "https://cdn.jsdelivr.net/npm/music-metadata-browser@2.5.10/lib/index.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>AI DJ Station</h1>
+
+        <div class="input-area">
+            <div class="input-group">
+                <label for="musicUrl">Load from URL:</label>
+                <input type="url" id="musicUrl" placeholder="Enter music URL">
+                <button id="loadUrlBtn">Load</button>
+            </div>
+            <p class="or-separator">OR</p>
+            <div id="dropZone" class="drop-zone">
+                <p>Drag & Drop Music File Here</p>
+                <p class="file-name-display" id="dropZoneFileName"></p>
+                <input type="file" id="fileInput" accept="audio/*" style="display: none;">
+            </div>
+        </div>
+
+        <div id="playerControls" class="player-controls" style="display:none;">
+            <h2 id="trackTitle">No track loaded</h2>
+            <p id="trackArtist"></p>
+            
+            <div class="genre-input-group">
+                <label for="genreInput">Genre:</label>
+                <input type="text" id="genreInput" placeholder="e.g., Electronic, Pop, Rock">
+            </div>
+
+            <audio id="audioPlayer" controls></audio>
+            
+            <div class="ai-dj-section">
+                <button id="aiDjButton">Ask AI DJ</button>
+                <div id="aiCommentary" class="ai-commentary">
+                    <img id="aiAvatar" src="dj_avatar.png" alt="AI DJ Avatar">
+                    <p id="aiText">AI DJ is waiting for a track...</p>
+                    <button id="speakButton" style="display:none;">Speak 🗣️</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="history-section">
+            <h3>Recently Loaded (from this session)</h3>
+            <ul id="historyList">
+                <!-- History items will be populated here -->
+            </ul>
+        </div>
+
+    </div>
+    <script src="script.js" type="module"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+
