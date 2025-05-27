@@ -16,8 +16,6 @@ const aiText = document.getElementById('aiText');
 const speakButton = document.getElementById('speakButton');
 const historyList = document.getElementById('historyList');
 
-const CORS_PROXY_URL = 'https://api.allorigins.win/raw?url='; // Selected CORS proxy
-
 let currentTrackInfo = {
     title: '',
     artist: '',
@@ -34,6 +32,46 @@ let speechAudioSource = null;
 
 const MAX_HISTORY = 10; // Max items in LLM history and display history
 const LOCAL_STORAGE_KEY = 'aiDjStationHistory';
+
+// Centralized error handler for the audio player
+audioPlayer.addEventListener('error', (e) => {
+    console.error('Audio player error:', audioPlayer.error);
+    let errorMessage = 'Failed to load audio.';
+    if (audioPlayer.error) {
+        switch (audioPlayer.error.code) {
+            case MediaError.MEDIA_ERR_ABORTED:
+                errorMessage = 'Audio loading aborted.';
+                break;
+            case MediaError.MEDIA_ERR_NETWORK:
+                errorMessage = 'A network error occurred while fetching the audio. Please check your connection or the URL.';
+                break;
+            case MediaError.MEDIA_ERR_DECODE:
+                errorMessage = 'The audio could not be decoded. The file might be corrupted or in an unsupported format.';
+                break;
+            case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                errorMessage = 'The audio source is not supported. This could be an invalid URL, a problem with the audio file type, or a security (CORS) issue if loading from another website.';
+                if (currentTrackInfo.source === 'url') {
+                    errorMessage += ' If loading from a URL, ensure it links directly to an audio file and the server allows cross-origin requests (CORS).';
+                }
+                break;
+            default:
+                errorMessage = 'An unknown error occurred while loading the audio.';
+        }
+    }
+    
+    trackTitleDisplay.textContent = 'Error Loading Track';
+    trackArtistDisplay.textContent = 'Unable to load';
+    genreInput.value = '';
+    aiText.textContent = errorMessage;
+    speakButton.style.display = 'none';
+    playerControls.style.display = 'block'; // Keep player controls visible to show the error
+
+    // Clear parts of currentTrackInfo to reflect the error state
+    currentTrackInfo.title = 'Error';
+    currentTrackInfo.artist = '';
+    currentTrackInfo.duration = 0;
+    // Keep source and sourceValue for context, and fileName if it was set
+});
 
 function saveToLocalStorage(trackData) {
     let history = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)) || [];
@@ -59,43 +97,29 @@ function loadFromLocalStorage() {
     return history;
 }
 
-function updateHistoryDisplay() {
-    const history = loadFromLocalStorage();
-    historyList.innerHTML = '';
-    history.forEach(track => {
-        const li = document.createElement('li');
-        // Ensure fileName is used if title is not available from metadata
-        const displayTitle = track.title || track.fileName || 'Unknown Title';
-        const displayArtist = track.artist || 'Unknown Artist';
-        const displayGenre = track.genre || 'N/A';
-        li.textContent = `${displayTitle} - ${displayArtist} (${displayGenre})`;
-        li.dataset.sourceValue = track.sourceValue; 
-        li.dataset.source = track.source;
-        li.dataset.title = track.title;
-        li.dataset.artist = track.artist;
-        li.dataset.genre = track.genre;
-        li.dataset.fileName = track.fileName; // Keep fileName for potential re-identification
-        
-        li.addEventListener('click', () => {
-            if (track.source === 'url' && track.sourceValue) {
-                musicUrlInput.value = track.sourceValue; // Set original URL in input
-                loadAudioFromUrl(track.sourceValue); // loadAudioFromUrl will handle proxying
-            } else {
-                // For files, we just repopulate the info.
-                currentTrackInfo = { ...track }; // Load all stored info
-                updateTrackDisplay();
-                playerControls.style.display = 'block';
-                audioPlayer.src = ''; 
-                aiText.textContent = "Track info loaded from history. Please re-select file if you want to play it.";
-                dropZoneFileName.textContent = track.fileName || 'File from history';
-                speakButton.style.display = 'none';
-            }
-        });
-        historyList.appendChild(li);
-    });
-    if (history.length === 0) {
-        historyList.innerHTML = '<li>No tracks loaded yet. Get started!</li>';
+function updateTrackDisplay() {
+    trackTitleDisplay.textContent = currentTrackInfo.title || currentTrackInfo.fileName || 'No title';
+    trackArtistDisplay.textContent = currentTrackInfo.artist || 'Unknown artist';
+    genreInput.value = currentTrackInfo.genre || '';
+    
+    // This function is primarily for successful loads or displaying history info.
+    // The error handler for audioPlayer.error will set specific error messages.
+    // Only set a positive "Track loaded" message if there's no active error on the player
+    // and the AI text hasn't been set to a more specific message (e.g. by file history click).
+    if (!audioPlayer.error && (currentTrackInfo.title || currentTrackInfo.fileName)) {
+         // Avoid overwriting messages like "Info for ... loaded from history..."
+        if (aiText.textContent.includes('loaded from history') || aiText.textContent.startsWith('Loading track...')) {
+            // Keep the specific message
+        } else {
+            aiText.textContent = "Track loaded. Click 'Ask AI DJ' for commentary!";
+        }
+    } else if (!audioPlayer.error) {
+        aiText.textContent = "AI DJ is waiting for a track...";
     }
+    // If audioPlayer.error is set, aiText would have been set by the error handler.
+
+    speakButton.style.display = 'none';
+    currentAiSpeechUrl = null;
 }
 
 async function parseMetadata(fileOrUrl) {
@@ -104,42 +128,29 @@ async function parseMetadata(fileOrUrl) {
         if (fileOrUrl instanceof File) {
             metadata = await mmb.parseBlob(fileOrUrl);
         } else if (typeof fileOrUrl === 'string') { // Assuming URL
-            const proxiedUrl = CORS_PROXY_URL + encodeURIComponent(fileOrUrl);
-            console.log(`Fetching metadata from proxied URL: ${proxiedUrl}`);
-            try {
-                const response = await fetch(proxiedUrl);
-                if (!response.ok) {
-                    console.error(`Failed to fetch from proxy: ${response.status} ${response.statusText}`);
-                    throw new Error(`Proxy fetch failed: ${response.status}`);
-                }
-                const blob = await response.blob();
-                // Use the original URL for context if music-metadata-browser uses it
-                metadata = await mmb.parseBlob(blob, { path: fileOrUrl, mimeType: blob.type });
-            } catch (fetchError) {
-                console.error('Error fetching or parsing URL metadata via proxy:', fetchError);
-                // Fallback for proxied URL if fetch or parse fails
-                return {
-                    title: fileOrUrl.substring(fileOrUrl.lastIndexOf('/') + 1) || 'Unknown Title (URL)',
-                    artist: 'Unknown Artist',
-                    genre: '',
-                    duration: 0
-                };
-            }
-        } else {
-             // Should not happen with current logic
-            console.warn("parseMetadata called with unexpected type:", fileOrUrl);
-            return { title: 'Unknown', artist: 'Unknown', genre: '', duration: 0 };
+            // music-metadata-browser typically needs a fetch response or blob.
+            // For URLs, we can fetch it first, then parse.
+            // However, for direct audio src, browser handles streaming.
+            // Let's simplify: for URL, we'll use it directly for audio src.
+            // Metadata extraction from remote URL is more complex and might hit CORS.
+            // So, for URLs, we'll rely on user input for genre and derive title from URL.
+             return {
+                title: fileOrUrl.substring(fileOrUrl.lastIndexOf('/') + 1) || 'Unknown Title',
+                artist: 'Unknown Artist',
+                genre: '', // User will input
+                duration: 0 // Will get from audio element
+            };
         }
 
         return {
-            title: metadata.common.title || (fileOrUrl instanceof File ? fileOrUrl.name : fileOrUrl.substring(fileOrUrl.lastIndexOf('/') + 1)) || 'Unknown Title',
+            title: metadata.common.title || fileOrUrl.name || 'Unknown Title',
             artist: metadata.common.artist || 'Unknown Artist',
             genre: metadata.common.genre ? metadata.common.genre.join(', ') : '',
             duration: metadata.format.duration || 0
         };
     } catch (error) {
         console.error('Error parsing metadata:', error);
-        const fallbackName = (fileOrUrl instanceof File) ? fileOrUrl.name : (typeof fileOrUrl === 'string' ? fileOrUrl.substring(fileOrUrl.lastIndexOf('/') + 1) : 'Unknown Source');
+        const fallbackName = (fileOrUrl instanceof File) ? fileOrUrl.name : fileOrUrl.substring(fileOrUrl.lastIndexOf('/') + 1);
         return {
             title: fallbackName || 'Unknown Title',
             artist: 'Unknown Artist',
@@ -149,59 +160,57 @@ async function parseMetadata(fileOrUrl) {
     }
 }
 
-function updateTrackDisplay() {
-    trackTitleDisplay.textContent = currentTrackInfo.title || 'No title';
-    trackArtistDisplay.textContent = currentTrackInfo.artist || 'Unknown artist';
-    genreInput.value = currentTrackInfo.genre || '';
-    aiText.textContent = "Track loaded. Click 'Ask AI DJ' for commentary!";
+async function loadAudioFromFile(file) {
+    aiText.textContent = 'Loading track...';
     speakButton.style.display = 'none';
     currentAiSpeechUrl = null;
-}
+    playerControls.style.display = 'block'; // Show controls immediately with loading state
 
-async function loadAudioFromFile(file) {
     const metadata = await parseMetadata(file);
     currentTrackInfo = {
         ...metadata,
         source: 'file',
-        // sourceValue is filename for files, as the File object cannot be stringified for localStorage
         sourceValue: file.name, 
         fileName: file.name
     };
     
+    // Display tentative info
+    trackTitleDisplay.textContent = currentTrackInfo.fileName || 'Loading...';
+    trackArtistDisplay.textContent = currentTrackInfo.artist || 'Parsing...';
+    genreInput.value = currentTrackInfo.genre || '';
+
     const objectURL = URL.createObjectURL(file);
     audioPlayer.src = objectURL;
-    playerControls.style.display = 'block';
-    updateTrackDisplay();
-    saveToLocalStorage(currentTrackInfo); // Save complete info
+    // `loadedmetadata` event will handle final display updates and saving
 }
 
 async function loadAudioFromUrl(url) {
     if (!url || !url.trim()) {
         alert('Please enter a valid URL.');
-        musicUrlInput.value = ''; // Clear invalid input
+        musicUrlInput.value = ''; 
         return;
     }
-    const trimmedUrl = url.trim();
-    console.log(`Loading audio from URL: ${trimmedUrl}`);
-    aiText.textContent = 'Loading track from URL...'; // Indicate loading
+    url = url.trim();
 
-    // Parse metadata first using the original URL (parseMetadata handles proxying for fetch)
-    const metadata = await parseMetadata(trimmedUrl); 
-    
+    aiText.textContent = 'Loading track...';
+    speakButton.style.display = 'none';
+    currentAiSpeechUrl = null;
+    playerControls.style.display = 'block'; // Show controls immediately
+
+    const metadata = await parseMetadata(url); 
     currentTrackInfo = {
-        ...metadata, // metadata from parsing (could be fallback if proxy fails)
+        ...metadata, 
         source: 'url',
-        sourceValue: trimmedUrl, // Store the original URL
-        // Use metadata.title if available, otherwise fallback to URL part
-        fileName: metadata.title && metadata.title !== 'Unknown Title (URL)' ? metadata.title : (trimmedUrl.substring(trimmedUrl.lastIndexOf('/') + 1) || 'URL Track')
+        sourceValue: url,
+        fileName: metadata.title 
     };
-    
-    const proxiedAudioSrc = CORS_PROXY_URL + encodeURIComponent(trimmedUrl);
-    audioPlayer.src = proxiedAudioSrc;
-    
-    playerControls.style.display = 'block';
-    updateTrackDisplay(); // Update with potentially richer metadata
-    saveToLocalStorage(currentTrackInfo); // Save complete info
+
+    trackTitleDisplay.textContent = currentTrackInfo.fileName || 'Loading...';
+    trackArtistDisplay.textContent = currentTrackInfo.artist; 
+    genreInput.value = currentTrackInfo.genre || ''; // Will be empty initially for URL
+
+    audioPlayer.src = url; 
+    // `loadedmetadata` event will handle final display updates and saving
 }
 
 // Event Listeners
@@ -249,19 +258,32 @@ fileInput.addEventListener('change', (event) => {
     const files = event.target.files;
     if (files.length > 0) {
         const file = files[0];
-        if (file.type.startsWith('audio/')) { // Added check here too for consistency
+        if (file.type.startsWith('audio/')) { // Ensure it's an audio file before processing
             dropZoneFileName.textContent = `Selected: ${file.name}`;
             loadAudioFromFile(file);
         } else {
             alert('Please select an audio file.');
             dropZoneFileName.textContent = 'Invalid file type selected.';
-            fileInput.value = ''; // Reset file input
+            // Optionally reset file input
+            fileInput.value = '';
         }
     }
 });
 
 audioPlayer.addEventListener('loadedmetadata', () => {
+    // Clear any previous error state from the player itself
+    // Note: audioPlayer.error is not directly settable. Browser manages it.
+    // If loadedmetadata fires, it means loading was successful.
+
     currentTrackInfo.duration = audioPlayer.duration;
+    
+    // If metadata parsing gave a title, prefer it. Otherwise, keep fileName.
+    if (currentTrackInfo.title === 'Unknown Title' || !currentTrackInfo.title) {
+        currentTrackInfo.title = currentTrackInfo.fileName;
+    }
+
+    updateTrackDisplay(); 
+    saveToLocalStorage(currentTrackInfo);
 });
 
 audioPlayer.addEventListener('ended', () => {
@@ -350,12 +372,61 @@ speakButton.addEventListener('click', async () => {
     }
 });
 
-// Initial load
-updateHistoryDisplay();
+function updateHistoryDisplay() {
+    const history = loadFromLocalStorage();
+    historyList.innerHTML = ''; // Clear existing items
+    if (history.length === 0) {
+        const li = document.createElement('li');
+        li.textContent = 'No tracks loaded yet. Get started!';
+        li.style.cursor = 'default';
+        historyList.appendChild(li);
+        return;
+    }
 
-// Simple welcome message if no history
-if (loadFromLocalStorage().length === 0) {
-    historyList.innerHTML = '<li>No tracks loaded yet. Get started!</li>';
+    history.forEach(track => {
+        const li = document.createElement('li');
+        // Display filename if title is generic or missing, otherwise title
+        const displayTitle = (track.title && track.title !== 'Unknown Title' && track.title !== track.fileName) ? track.title : track.fileName;
+        li.textContent = `${displayTitle || 'Unknown Track'} - ${track.artist || 'Unknown Artist'} (${track.genre || 'N/A'})`;
+        
+        // Store all necessary data attributes for reloading
+        li.dataset.source = track.source;
+        li.dataset.sourceValue = track.sourceValue; // URL or original file name
+        li.dataset.title = track.title || '';
+        li.dataset.artist = track.artist || '';
+        li.dataset.genre = track.genre || '';
+        li.dataset.fileName = track.fileName || ''; // Essential for files and as fallback
+        
+        li.addEventListener('click', () => {
+            if (track.source === 'url' && track.sourceValue) {
+                musicUrlInput.value = track.sourceValue; // Populate input field
+                loadAudioFromUrl(track.sourceValue);
+            } else if (track.source === 'file') {
+                // For files, repopulate info. User must re-select the file.
+                currentTrackInfo = { 
+                    title: track.title, 
+                    artist: track.artist, 
+                    genre: track.genre, 
+                    duration: 0, // Duration will be unknown until file is reloaded
+                    source: 'file',
+                    sourceValue: track.sourceValue, // Original file name
+                    fileName: track.fileName
+                };
+                audioPlayer.src = ''; // Clear current audio
+                playerControls.style.display = 'block';
+                updateTrackDisplay(); // Updates titles, artist, genre from currentTrackInfo
+
+                // Specific message for file history items
+                aiText.textContent = `Info for "${track.fileName || 'track'}" loaded from history. Please re-select the file to play it.`;
+                dropZoneFileName.textContent = track.fileName || 'File from history';
+                speakButton.style.display = 'none';
+            }
+        });
+        historyList.appendChild(li);
+    });
 }
 
-console.log("AI DJ Station script loaded.");
+// Initial load
+updateHistoryDisplay(); // This will now also handle the empty state message.
+
+console.log("AI DJ Station script loaded and updated with enhanced URL error handling.");
